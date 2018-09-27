@@ -14,12 +14,14 @@ DataCache<ECPoint, ValidatorState> validators = Blockchain.Default.GetStates<ECP
   * `ToJson:` 转换成Json对象
 
 #### 1.2 AccountState
-* 定义账户通用的属性和方法
-  * `ScriptHash:`*UInt160* 地址的散列值
+* 账户信息的状态数据
+  * `ScriptHash:`*UInt160* 地址的Hash，即UTXO模型中Output里指定的收款人地址
   * `IsFrozen：`*bool* 标记账户是否冻结
-  * `Votes:`*ECPoint[]* 
-  * `Size：`重写StateBase的Size
-  * `GetBalance:`获取账户资产余额
+  * `Votes:`*ECPoint[]* 该账户支持的记账备选人，用公钥表示，每个账户可以支持多个
+  * `Balances:Dictionary<UInt256, Fixed8>`全局资产余额，目前就只有NEO和GAS两种
+* 在使用钱包新建账户后，并不会马上生成一个AccountState
+* 只有该账户有相关的交易上链时，才会生成对应的AccountState
+* 当该账户所有全局资产余额都为零时，会销毁对应的AccountState
 
 #### 1.3 AssetState
 * 继承StateBase，资产定义类
@@ -39,10 +41,12 @@ DataCache<ECPoint, ValidatorState> validators = Blockchain.Default.GetStates<ECP
   * `GetName:` 获取资产名称
 
 #### 1.4 SpentCoinState
-* 继承StateBase，交易定义类
-  * `TransactionHash:`*UInt256* 交易哈希
-  * `TransactionHeight:`*uint* 交易高度
-  * `Items:`*Dictionary<ushort, uint>*
+* `GoverningToken`的花费记录，也就是只记录消耗NEO货币的相关信息
+* `SpentCoinState`可以用来追溯还未行权的GAS总额，并未ClaimTransaction提供来源依据
+  * `TransactionHash:`*UInt256* 本次花费的余额来源，即UTOX模型中前一次交易输入项的Hash
+  * `TransactionHeight:`*uint* 前一次交易的区块高度
+  * `Items:`*Dictionary<ushort, uint>* 前一次交易输出项的索引编号，当前区块高度
+* 在`LevelDBBlockchain:GetUnclaimed(UINT hash)`里会使用这个状态
 
 #### 1.5 UnspentCoinState
 * 继承StateBase，ICloneable，未花费货币定义类
@@ -169,7 +173,7 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
 ### 2.7 Blockchain
 * 区块链的基类，定义了区块链的各类功能接口
 * `GoverningToken:`对应Neo币
-* `UtilityToken:`对应Gas
+* `UtilityToken:`对应GAS
 
 * 主要接口函数
   * `AddBlock(block)`
@@ -181,7 +185,11 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
   * `GetHeader`
   * `ContainsTransaction(hash)`
   * `GetTransaction(hash)`
-
+  * `CalculateBonus(inputs)`
+    * 根据未行权的NEO货币的UTXO输入项，计算行权后可获得的GAS总额
+  * `CalculateBonusInternal(unclaimed)`
+    * 根据未行权NEO货币的花费记录，计算行权后可以获得的GAS总额
+    * 每一条NEO花费记录对应的行权后可获得的GAS总额 = （生成的GAS总量 + 系统回收的GAS总量）* （NEO金额 / NEO货币总量）
 ---
 ### 3. Transaction相关的类
 #### 3.1 TransactionAttribute
@@ -215,7 +223,7 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
   * `GetTransactionResults:`返回交易后，各类资产的变化量
     * 一般的转账交易，这里不会有返回的资产变化量，因为交易的Input和Output的金额总和应该相等
     * 如果返回的资产变化量大于零，表示有资产被回收消耗了，例如因为系统费用消耗了gas
-    * 如果返回的资产变化量小于零，表示有新的资产产生了，例如矿工交易生成了新的gas，有账户认领了新的gas
+    * 如果返回的资产变化量小于零，表示有新的资产产生了，例如有账户认领了新的gas
 ##### 3.4.1 RegisterTransaction
 * (已弃用) 用于资产登记的交易
 * 注册区块链货币，目前只有两种
@@ -234,7 +242,8 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
 * 创始块中有将NEO股转给默认候选人的交易
 
 ##### 3.4.4 ClaimTransaction
-* 用于分配 NeoGas 的交易
+* 用于分配 NeoGAS 的交易
+* 先通过GetUnclaimedCoins获得还未行权的GAS总额，再发起ClaimTransaction来完成行权
 
 ##### 3.4.5 EnrollmentTransaction
 * (已弃用)用于报名成为记账候选人的特殊交易
@@ -292,6 +301,8 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
   * `GetTransaction(hash)`
     * 获取一个交易
     * 内存里没有缓存，需要查询LevelDB获取数据
+  * `GetUnclaimed(hash)`
+    * 查询某个交易消耗了NEO货币，但这些NEO货币还有未行权的GAS
 
 * 程序初始化流程:
   * 从数据库中加载所有的区块头数据，缓存在变量header_index中
@@ -310,7 +321,7 @@ Merkle树，可以理解为二叉树，其中每个节点有一个对应的Hash�
     * 根据交易里的Input和Output，更新一批状态类数据，包括账号，候选人，已花费和未花费
     * 再根据具体的交易类型，执行对应的处理逻辑，例如
       * 对于资产登记的交易，会更新资产状态
-      * 对于分配Gas的交易，会更新已花费状态
+      * 对于分配GAS的交易，会更新已花费状态
       * 对于竞选记账人的交易，会更新候选人状态
       * 对于发布智能合约的交易，会更新合约状态
       * 对于执行智能合约的交易，会使用`StateMachine和ApplicationEngine`来执行交易里的合约脚本
