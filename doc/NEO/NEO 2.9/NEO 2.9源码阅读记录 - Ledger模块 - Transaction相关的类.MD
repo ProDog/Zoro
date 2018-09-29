@@ -16,6 +16,7 @@
 * 主要成员
   * `Type：`交易类型
   * `Version：`版本号，用来在代码升级后兼容老版本的数据
+  * `Attributes：`交易的属性数据，可以用来触发鉴权合约
   * `Inputs：`输入项列表
     * 由交易的Hash和Output索引号组成
     * 通过Hash和索引号可以唯一定位到一个交易的某个Output数据
@@ -27,6 +28,8 @@
 * 主要函数
   * `Verify:`验证交易是否有效
   * `VerifyWitnesses:`验证见证人的签名
+  * `GetScriptHashesForVerifying:`获取验证签名脚本的Hash，用来验证验签脚本的合法性
+    * 在UTXO模型里，收款人地址就是验签脚本的Hash
   * `References:`返回用Input作为key，该Input所属交易中的Output作为value的映射表
     * 可以用来快速计算交易中所有Input项的金额总和
     * 可以用来快速收集交易中所有Input项的货币来源账户的地址
@@ -34,6 +37,13 @@
     * 一般的转账交易，这里不会有返回的资产变化量，因为交易的Input和Output的金额总和应该相等
     * 如果返回的资产变化量大于零，表示有资产被回收消耗了，例如因为系统费用消耗了GAS
     * 如果返回的资产变化量小于零，表示有新的资产产生了，例如有账户认领了新的GAS
+
+### TransactionAttribute
+* 记录交易的额外属性
+* `Usage` 标记该属性数据的类型
+  * `Script` 表示在验证交易签名时，额外执行`Data`里的脚本，可以用来触发合约的鉴权函数
+* `Data`
+  * 当`Usage=Script`的时候，`Data`里记录的是要调用的合约地址（脚本的Hash)
 
 ### TransactionState
 * 继承自`StateBase`，2.9版本中增加的类
