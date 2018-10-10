@@ -20,6 +20,7 @@
   * 或者使用`Context.ActorOf(Props)`来创建一个Actor，这里的`Context`是Akka.Actor.UntypedActor类的静态方法
 * ActorSystem
   * Actor的管理类
+  * 内部会创建线程池，一般每个程序只用一个ActorSystem实例
 
 ### NEO 2.9中的Actor模型使用方式
 * NEO 2.9中把以下几个对象作为Actor来使用
@@ -36,3 +37,79 @@
   * `StartConsensus` 创建ConsensusService对象，发Start消息，启动共识服务
   * `StartNode` 发Start消息，启动LocalNode
   * `StartRpc` 创建RpcServer对象，启动RPC服务
+
+* `Blockchain`的消息对象
+  ```
+  public sealed class Blockchain : UntypedActor
+  {
+    public class Register { }
+    public class ApplicationExecuted { public Transaction Transaction; public ApplicationExecutionResult[] ExecutionResults; }
+    public class PersistCompleted { public Block Block; }
+    public class Import { public IEnumerable<Block> Blocks; }
+    public class ImportCompleted { }
+    ...
+  }
+  ```
+
+* 向`Blockchain`投递消息的范例代码
+  ```
+  Program.NeoSystem.Blockchain.Tell(new Blockchain.Register(), actor);
+  system.Blockchain.Tell(inventory);
+  system.Blockchain.Tell(payload.Headers, Context.Parent);
+  RelayResultReason reason = system.Blockchain.Ask<RelayResultReason>(tx).Result;
+  RelayResultReason reason = system.Blockchain.Ask<RelayResultReason>(block).Result;
+  ```
+  
+* `Blockchain`的消息处理函数
+  ```
+  protected override void OnReceive(object message)
+  {
+    switch (message)
+    {
+      case Register _:
+          OnRegister();
+          break;
+      case Import import:
+          OnImport(import.Blocks);
+          break;
+      case Header[] headers:
+          OnNewHeaders(headers);
+          break;
+      case Block block:
+          Sender.Tell(OnNewBlock(block));
+          break;
+      case Transaction transaction:
+          Sender.Tell(OnNewTransaction(transaction));
+          break;
+      case ConsensusPayload payload:
+          Sender.Tell(OnNewConsensus(payload));
+          break;
+      case Terminated terminated:
+          subscribers.Remove(terminated.ActorRef);
+          break;
+    }
+  }
+  ```
+
+* 消息投递的范例代码
+  * `NeoSystem`启动本地节点
+  ```
+  LocalNode.Tell(new Peer.Start
+            {
+                Port = port,
+                WsPort = ws_port
+            });
+  ```
+  * `RpcServer`收到"sendrawtransaction"指令后的处理
+  ```
+  case "sendrawtransaction":
+  {
+    Transaction tx = Transaction.DeserializeFrom(_params[0].AsString().HexToBytes());
+    RelayResultReason reason = system.Blockchain.Ask<RelayResultReason>(tx).Result;
+    return GetRelayResult(reason);
+  }
+  ```
+  * `LocalNode`向远程节点广播数据清单
+  ```
+  Connections.Tell(new RemoteNode.Relay { Inventory = inventory });
+  ```
